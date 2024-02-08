@@ -279,8 +279,8 @@ public class InferencePlugin extends Plugin
         return Map.of();
     }
 
-    @Override
-    public Map<String, MetadataFieldMapper.TypeParser> getMetadataMappers() {
-        return Map.of(SemanticTextInferenceResultFieldMapper.NAME, SemanticTextInferenceResultFieldMapper.PARSER);
-    }
+//    @Override
+//    public Map<String, MetadataFieldMapper.TypeParser> getMetadataMappers() {
+//        return Map.of(SemanticTextInferenceResultFieldMapper.NAME, SemanticTextInferenceResultFieldMapper.PARSER);
+//    }
 }

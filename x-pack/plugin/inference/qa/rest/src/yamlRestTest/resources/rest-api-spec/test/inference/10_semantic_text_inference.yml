@@ -59,6 +59,38 @@ setup:
     - exists: _source._semantic_text_inference.inference_field.0.sparse_embedding
     - exists: _source._semantic_text_inference.another_inference_field.0.sparse_embedding
 
+
+---
+"Accepts non-strings and arrays":
+  - do:
+      index:
+        index: test-index
+        id: doc_1
+        body:
+          inference_field:
+            - "inference test"
+            - "more inference tests"
+          another_inference_field: 123
+          non_inference_field: "non inference test"
+
+  - do:
+      get:
+        index: test-index
+        id: doc_1
+
+  - match: { _source.inference_field.0: "inference test" }
+  - match: { _source.inference_field.1: "more inference tests" }
+  - match: { _source.another_inference_field: 123 }
+  - match: { _source.non_inference_field: "non inference test" }
+
+  - match: { _source._semantic_text_inference.inference_field.0.text: "inference test" }
+  - match: { _source._semantic_text_inference.inference_field.1.text: "more inference tests" }
+  - match: { _source._semantic_text_inference.another_inference_field.0.text: "123" }
+
+  - exists: _source._semantic_text_inference.inference_field.0.sparse_embedding
+  - exists: _source._semantic_text_inference.inference_field.1.sparse_embedding
+  - exists: _source._semantic_text_inference.another_inference_field.0.sparse_embedding
+
 ---
 "Updating non semantic_text fields does not recalculate embeddings":
     - do:

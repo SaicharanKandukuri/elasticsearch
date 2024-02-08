@@ -25,6 +25,7 @@ import org.elasticsearch.inference.Model;
 import org.elasticsearch.inference.ModelRegistry;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -217,7 +218,7 @@ public class BulkShardRequestInferenceProvider {
                     k -> new HashMap<String, Object>()
                 );
 
-                List<String> inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet, docMap);
+                List<String> inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap);
 
                 if (inferenceFieldNames.isEmpty()) {
                     continue;
@@ -232,6 +233,7 @@ public class BulkShardRequestInferenceProvider {
                     );
                     continue;
                 }
+                List<String> inferenceTexts = getInferenceTexts(inferenceFieldNames, docMap);
                 ActionListener<InferenceServiceResults> inferenceResultsListener = new ActionListener<>() {
                     @Override
                     public void onResponse(InferenceServiceResults results) {
@@ -242,24 +244,38 @@ public class BulkShardRequestInferenceProvider {
                             );
                         }
 
-                        int i = 0;
-                        for (InferenceResults inferenceResults : results.transformToLegacyFormat()) {
-                            String fieldName = inferenceFieldNames.get(i++);
+                        List<? extends InferenceResults> inferenceResults = results.transformToLegacyFormat();
+                        assert inferenceResults.size() == inferenceTexts.size()
+                            : "Inference results size does not match inference texts size";
+
+                        int resultsIndex = 0;
+                        for (String fieldName : inferenceFieldNames) {
                             @SuppressWarnings("unchecked")
                             List<Map<String, Object>> inferenceFieldResultList = (List<Map<String, Object>>) rootInferenceFieldMap
                                 .computeIfAbsent(fieldName, k -> new ArrayList<>());
                             // Remove previous inference results if any
                             inferenceFieldResultList.clear();
 
-                            // TODO Check inference result type to change subfield name
-                            var inferenceFieldMap = Map.of(
-                                SPARSE_VECTOR_SUBFIELD_NAME,
-                                inferenceResults.asMap("output").get("output"),
-                                TEXT_SUBFIELD_NAME,
-                                docMap.get(fieldName)
-                            );
-                            inferenceFieldResultList.add(inferenceFieldMap);
+                            Object originalText = docMap.get(fieldName);
+                            if (originalText instanceof Collection<?> textsCollection) {
+                                for (Object originalTextElem : textsCollection) {
+                                    inferenceFieldResultList.add(
+                                        getInferenceResult(originalTextElem, inferenceResults.get(resultsIndex++))
+                                    );
+                                }
+                            } else {
+                                inferenceFieldResultList.add(getInferenceResult(originalText, inferenceResults.get(resultsIndex++)));
+                            }
                         }
+                    }
+
+                    private static Map<String, Object> getInferenceResult(Object originalText, InferenceResults inferenceResults) {
+                        return Map.of(
+                            SPARSE_VECTOR_SUBFIELD_NAME,
+                            inferenceResults.asMap("output").get("output"),
+                            TEXT_SUBFIELD_NAME,
+                            originalText == null ? "" : String.valueOf(originalText)
+                        );
                     }
 
                     @Override
@@ -271,7 +287,7 @@ public class BulkShardRequestInferenceProvider {
                 inferenceProvider.service()
                     .infer(
                         inferenceProvider.model,
-                        inferenceFieldNames.stream().map(docMap::get).map(String::valueOf).collect(Collectors.toList()),
+                        inferenceTexts,
                         // TODO check for additional settings needed
                         Map.of(),
                         InputType.INGEST,
@@ -281,13 +297,26 @@ public class BulkShardRequestInferenceProvider {
         }
     }
 
-    private static List<String> getFieldNamesForInference(Map.Entry<String, Set<String>> fieldModelsEntrySet, Map<String, Object> docMap) {
+    private static List<String> getInferenceTexts(List<String> inferenceFieldNames, Map<String, Object> docMap) {
+        List<String> inferenceTexts = new ArrayList<>();
+        for (String inferenceField : inferenceFieldNames) {
+            Object fieldValue = docMap.get(inferenceField);
+            if (fieldValue instanceof Collection<?> valuesCollection) {
+                inferenceTexts.addAll(valuesCollection.stream().map(v -> v == null ? "" : v.toString()).toList());
+            } else {
+                inferenceTexts.add(fieldValue == null ? "" : fieldValue.toString());
+            }
+        }
+        return inferenceTexts;
+    }
+
+    private static List<String> getFieldNamesForInference(Set<String> inferenceFields, Map<String, Object> docMap) {
         List<String> inferenceFieldNames = new ArrayList<>();
-        for (String inferenceField : fieldModelsEntrySet.getValue()) {
+        for (String inferenceField : inferenceFields) {
             Object fieldValue = docMap.get(inferenceField);
 
-            // Perform inference on string, non-null values
-            if (fieldValue instanceof String) {
+            // Perform inference on non-null values
+            if (fieldValue != null) {
                 inferenceFieldNames.add(inferenceField);
             }
         }
