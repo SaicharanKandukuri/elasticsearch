@@ -173,6 +173,7 @@ public class BulkShardRequestInferenceProvider {
         }
     }
 
+    @SuppressWarnings("unchecked")
     private void performInferenceOnBulkItemRequest(
         BulkItemRequest bulkItemRequest,
         Map<String, Set<String>> fieldsForModels,
@@ -212,11 +213,19 @@ public class BulkShardRequestInferenceProvider {
             for (Map.Entry<String, Set<String>> fieldModelsEntrySet : fieldsForModels.entrySet()) {
                 String modelId = fieldModelsEntrySet.getKey();
 
-                @SuppressWarnings("unchecked")
-                Map<String, Object> rootInferenceFieldMap = (Map<String, Object>) docMap.computeIfAbsent(
-                    ROOT_INFERENCE_FIELD,
-                    k -> new HashMap<String, Object>()
-                );
+                Map<String, Object> rootInferenceFieldMap;
+                try {
+                    rootInferenceFieldMap = (Map<String, Object>) docMap.computeIfAbsent(
+                        ROOT_INFERENCE_FIELD,
+                        k -> new HashMap<String, Object>()
+                    );
+                } catch (ClassCastException e) {
+                    onBulkItemFailure.accept(
+                        bulkItemRequest,
+                        new IllegalArgumentException("Inference result field [" + ROOT_INFERENCE_FIELD + "] is not an object")
+                    );
+                    return;
+                }
 
                 List<String> inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap);
 
@@ -250,7 +259,6 @@ public class BulkShardRequestInferenceProvider {
 
                         int resultsIndex = 0;
                         for (String fieldName : inferenceFieldNames) {
-                            @SuppressWarnings("unchecked")
                             List<Map<String, Object>> inferenceFieldResultList = (List<Map<String, Object>>) rootInferenceFieldMap
                                 .computeIfAbsent(fieldName, k -> new ArrayList<>());
                             // Remove previous inference results if any
