@@ -213,6 +213,7 @@ public class BulkShardRequestInferenceProvider {
             for (Map.Entry<String, Set<String>> fieldModelsEntrySet : fieldsForModels.entrySet()) {
                 String modelId = fieldModelsEntrySet.getKey();
 
+                // TODO Group exception handling
                 Map<String, Object> rootInferenceFieldMap;
                 try {
                     rootInferenceFieldMap = (Map<String, Object>) docMap.computeIfAbsent(
@@ -228,7 +229,17 @@ public class BulkShardRequestInferenceProvider {
                     break;
                 }
 
-                List<String> inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap);
+                List<String> inferenceFieldNames;
+                try {
+                    inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap, rootInferenceFieldMap);
+                } catch (IllegalArgumentException e) {
+                    failedItems.add(itemIndex);
+                    onBulkItemFailure.accept(
+                        bulkItemRequest,
+                        e
+                    );
+                    break;
+                }
 
                 if (inferenceFieldNames.isEmpty()) {
                     continue;
@@ -268,8 +279,20 @@ public class BulkShardRequestInferenceProvider {
 
                         int resultsIndex = 0;
                         for (String fieldName : inferenceFieldNames) {
-                            List<Map<String, Object>> inferenceFieldResultList = (List<Map<String, Object>>) rootInferenceFieldMap
-                                .computeIfAbsent(fieldName, k -> new ArrayList<>());
+                            List<Map<String, Object>> inferenceFieldResultList = null;
+                            try {
+                                inferenceFieldResultList = (List<Map<String, Object>>) rootInferenceFieldMap
+                                    .computeIfAbsent(fieldName, k -> new ArrayList<>());
+                            } catch (ClassCastException e) {
+                                failedItems.add(itemIndex);
+                                onBulkItemFailure.accept(
+                                    bulkItemRequest,
+                                    new IllegalArgumentException(
+                                        "Inference result field [" + ROOT_INFERENCE_FIELD + "." + fieldName + "] is not an object"
+                                    )
+                                );
+                                break;
+                            }
                             // Remove previous inference results if any
                             inferenceFieldResultList.clear();
 
@@ -318,13 +341,17 @@ public class BulkShardRequestInferenceProvider {
         List<String> inferenceTexts = new ArrayList<>();
         for (String fieldName : inferenceFieldNames) {
             Object fieldValue = docMap.get(fieldName);
-            if (fieldValue instanceof Collection<?> valuesCollection) {
-                inferenceTexts.addAll(valuesCollection.stream().map(v -> getFieldValue(fieldName, v)).toList());
-            } else {
-                inferenceTexts.add(getFieldValue(fieldName, fieldValue));
-            }
+            inferenceTexts.addAll(getInferenceTextsForField(fieldName, fieldValue));
         }
         return inferenceTexts;
+    }
+
+    private static List<String> getInferenceTextsForField(String fieldName, Object fieldValue) {
+        if (fieldValue instanceof Collection<?> valuesCollection) {
+            return valuesCollection.stream().map(v -> getFieldValue(fieldName, v)).toList();
+        } else {
+            return List.of(getFieldValue(fieldName, fieldValue));
+        }
     }
 
     private static String getFieldValue(String fieldName, Object fieldValue) {
@@ -334,16 +361,42 @@ public class BulkShardRequestInferenceProvider {
         return fieldValue == null ? "" : fieldValue.toString();
     }
 
-    private static List<String> getFieldNamesForInference(Set<String> inferenceFields, Map<String, Object> docMap) {
+    private static List<String> getFieldNamesForInference(Set<String> inferenceFields, Map<String, Object> docMap, Map<String, Object> rootInferenceFieldMap) {
         List<String> inferenceFieldNames = new ArrayList<>();
-        for (String inferenceField : inferenceFields) {
-            Object fieldValue = docMap.get(inferenceField);
-
-            // Perform inference on non-null values
-            if (fieldValue != null) {
-                inferenceFieldNames.add(inferenceField);
+        for (String fieldName : inferenceFields) {
+            Object fieldValue = docMap.get(fieldName);
+            // Check text values have not changed from inference in case we have them
+            if (needsToCalculateInference(rootInferenceFieldMap, fieldName, fieldValue) == false) {
+                inferenceFieldNames.add(fieldName);
             }
         }
         return inferenceFieldNames;
+    }
+
+    private static boolean needsToCalculateInference(Map<String, Object> rootInferenceFieldMap, String fieldName, Object fieldValue) {
+        if (rootInferenceFieldMap.containsKey(fieldName)) {
+            try {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> fieldInferenceResultList = (List<Map<String, Object>>) rootInferenceFieldMap.getOrDefault(
+                    fieldName,
+                    List.of()
+                );
+                List<String> previousInferenceTexts = fieldInferenceResultList.stream()
+                    .map(m -> (String) m.get(TEXT_SUBFIELD_NAME))
+                    .toList();
+
+                if (previousInferenceTexts.isEmpty() == false) {
+                    List<String> currentInferenceTexts = getInferenceTextsForField(fieldName, fieldValue);
+                    if (previousInferenceTexts.equals(currentInferenceTexts)) {
+                        return false;
+                    }
+                }
+            } catch (ClassCastException e) {
+                throw new IllegalArgumentException(
+                    "Inference result field [" + ROOT_INFERENCE_FIELD + "." + fieldName + "] is not a list of objects"
+                );
+            }
+        }
+        return true;
     }
 }
