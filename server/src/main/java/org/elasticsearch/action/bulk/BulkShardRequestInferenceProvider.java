@@ -227,7 +227,13 @@ public class BulkShardRequestInferenceProvider {
                     return;
                 }
 
-                List<String> inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap);
+                List<String> inferenceFieldNames;
+                try {
+                    inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap);
+                } catch (IllegalArgumentException e) {
+                    onBulkItemFailure.accept(bulkItemRequest, e);
+                    return;
+                }
 
                 if (inferenceFieldNames.isEmpty()) {
                     continue;
@@ -307,15 +313,22 @@ public class BulkShardRequestInferenceProvider {
 
     private static List<String> getInferenceTexts(List<String> inferenceFieldNames, Map<String, Object> docMap) {
         List<String> inferenceTexts = new ArrayList<>();
-        for (String inferenceField : inferenceFieldNames) {
-            Object fieldValue = docMap.get(inferenceField);
+        for (String fieldName : inferenceFieldNames) {
+            Object fieldValue = docMap.get(fieldName);
             if (fieldValue instanceof Collection<?> valuesCollection) {
-                inferenceTexts.addAll(valuesCollection.stream().map(v -> v == null ? "" : v.toString()).toList());
+                inferenceTexts.addAll(valuesCollection.stream().map(v -> getFieldValue(fieldName, v)).toList());
             } else {
-                inferenceTexts.add(fieldValue == null ? "" : fieldValue.toString());
+                inferenceTexts.add(getFieldValue(fieldName, fieldValue));
             }
         }
         return inferenceTexts;
+    }
+
+    private static String getFieldValue(String fieldName, Object fieldValue) {
+        if (fieldValue instanceof Map) {
+            throw new IllegalArgumentException("field [" + fieldName +"] can't be an object");
+        }
+        return fieldValue == null ? "" : fieldValue.toString();
     }
 
     private static List<String> getFieldNamesForInference(Set<String> inferenceFields, Map<String, Object> docMap) {

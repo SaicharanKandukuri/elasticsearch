@@ -97,7 +97,7 @@ public class BulkOperationTests extends ESTestCase {
             Map.of(SERVICE_1_ID, inferenceService1, SERVICE_2_ID, inferenceService2)
         );
 
-        Map<String, String> originalSource = Map.of(
+        Map<String, Object> originalSource = Map.of(
             randomAlphaOfLengthBetween(1, 20),
             randomAlphaOfLengthBetween(1, 100),
             randomAlphaOfLengthBetween(1, 20),
@@ -134,7 +134,7 @@ public class BulkOperationTests extends ESTestCase {
         ModelRegistry modelRegistry = createModelRegistry(Map.of());
         InferenceServiceRegistry inferenceServiceRegistry = createInferenceServiceRegistry(Map.of());
 
-        Map<String, String> originalSource = Map.of(
+        Map<String, Object> originalSource = Map.of(
             randomAlphaOfLengthBetween(1, 20),
             randomAlphaOfLengthBetween(1, 100),
             randomAlphaOfLengthBetween(1, 20),
@@ -200,7 +200,7 @@ public class BulkOperationTests extends ESTestCase {
         String firstInferenceTextService1 = randomAlphaOfLengthBetween(1, 100);
         String secondInferenceTextService1 = randomAlphaOfLengthBetween(1, 100);
         String inferenceTextService2 = randomAlphaOfLengthBetween(1, 100);
-        Map<String, String> originalSource = Map.of(
+        Map<String, Object> originalSource = Map.of(
             FIRST_INFERENCE_FIELD_SERVICE_1,
             firstInferenceTextService1,
             SECOND_INFERENCE_FIELD_SERVICE_1,
@@ -260,7 +260,7 @@ public class BulkOperationTests extends ESTestCase {
         InferenceServiceRegistry inferenceServiceRegistry = createInferenceServiceRegistry(Map.of(SERVICE_1_ID, inferenceService));
 
         String firstInferenceTextService1 = randomAlphaOfLengthBetween(1, 100);
-        Map<String, String> originalSource = Map.of(
+        Map<String, Object> originalSource = Map.of(
             FIRST_INFERENCE_FIELD_SERVICE_1,
             firstInferenceTextService1,
             randomAlphaOfLengthBetween(1, 20),
@@ -280,8 +280,154 @@ public class BulkOperationTests extends ESTestCase {
         assertThat(item.getFailure().getCause().getMessage(), equalTo(INFERENCE_FAILED_MSG));
 
         verifyInferenceServiceInvoked(modelRegistry, INFERENCE_SERVICE_1_ID, inferenceService, model, List.of(firstInferenceTextService1));
-
     }
+
+
+    private static Object randomObject() {
+        switch (randomInt(3)) {
+            case 0:
+                return randomDouble();
+            case 1:
+                return randomInt();
+            case 2:
+                return randomBoolean();
+            case 3:
+                return null;
+            default:
+                throw new IllegalStateException("Unexpected randomInt result");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public void testInferenceForArrays() {
+
+        Map<String, Set<String>> fieldsForModels = Map.of(
+            INFERENCE_SERVICE_1_ID,
+            Set.of(FIRST_INFERENCE_FIELD_SERVICE_1, SECOND_INFERENCE_FIELD_SERVICE_1)
+        );
+
+        ModelRegistry modelRegistry = createModelRegistry(
+            Map.of(INFERENCE_SERVICE_1_ID, SERVICE_1_ID)
+        );
+
+        Model model1 = mock(Model.class);
+        InferenceService inferenceService1 = createInferenceService(model1, INFERENCE_SERVICE_1_ID);
+        InferenceServiceRegistry inferenceServiceRegistry = createInferenceServiceRegistry(
+            Map.of(SERVICE_1_ID, inferenceService1)
+        );
+
+        List<?> firstInferenceTextService1 = randomList(1, 10, () -> randomAlphaOfLengthBetween(1, 10));
+        List<?> secondInferenceTextService1 = randomList(1, 20, () -> randomObject());
+        Map<String, Object> originalSource = Map.of(
+            FIRST_INFERENCE_FIELD_SERVICE_1,
+            firstInferenceTextService1,
+            SECOND_INFERENCE_FIELD_SERVICE_1,
+            secondInferenceTextService1
+        );
+
+        ActionListener<BulkResponse> bulkOperationListener = mock(ActionListener.class);
+        BulkShardRequest bulkShardRequest = runBulkOperation(
+            originalSource,
+            fieldsForModels,
+            modelRegistry,
+            inferenceServiceRegistry,
+            true,
+            bulkOperationListener
+        );
+        verify(bulkOperationListener).onResponse(any());
+
+        BulkItemRequest[] items = bulkShardRequest.items();
+        assertThat(items.length, equalTo(1));
+
+        Map<String, Object> writtenDocSource = ((IndexRequest) items[0].request()).sourceAsMap();
+        // Original doc source is preserved
+        originalSource.forEach((key, value) -> assertThat(writtenDocSource.get(key), equalTo(value)));
+
+        List<Object> expectedInferenceTexts = firstInferenceTextService1.stream()
+            .map(v -> v == null ? "" : String.valueOf(v))
+            .collect(Collectors.toList());
+        expectedInferenceTexts.addAll(
+            secondInferenceTextService1.stream().map(v -> v == null ? "" : String.valueOf(v)).toList()
+        );
+
+        // Check inference results
+        verifyInferenceServiceInvoked(
+            modelRegistry,
+            INFERENCE_SERVICE_1_ID,
+            inferenceService1,
+            model1,
+            expectedInferenceTexts
+        );
+    }
+
+    public void testTypeCoercionForInferenceFields() {
+
+        Map<String, Set<String>> fieldsForModels = Map.of(
+            INFERENCE_SERVICE_1_ID,
+            Set.of(FIRST_INFERENCE_FIELD_SERVICE_1, SECOND_INFERENCE_FIELD_SERVICE_1),
+            INFERENCE_SERVICE_2_ID,
+            Set.of(INFERENCE_FIELD_SERVICE_2)
+        );
+
+        ModelRegistry modelRegistry = createModelRegistry(
+            Map.of(INFERENCE_SERVICE_1_ID, SERVICE_1_ID, INFERENCE_SERVICE_2_ID, SERVICE_2_ID)
+        );
+
+        Model model1 = mock(Model.class);
+        InferenceService inferenceService1 = createInferenceService(model1, INFERENCE_SERVICE_1_ID);
+        Model model2 = mock(Model.class);
+        InferenceService inferenceService2 = createInferenceService(model2, INFERENCE_SERVICE_2_ID);
+        InferenceServiceRegistry inferenceServiceRegistry = createInferenceServiceRegistry(
+            Map.of(SERVICE_1_ID, inferenceService1, SERVICE_2_ID, inferenceService2)
+        );
+
+        Integer firstInferenceTextService1 = randomInt();
+        Boolean secondInferenceTextService1 = randomBoolean();
+        Double inferenceTextService2 = randomDouble();
+        Map<String, Object> originalSource = Map.of(
+            FIRST_INFERENCE_FIELD_SERVICE_1,
+            firstInferenceTextService1,
+            SECOND_INFERENCE_FIELD_SERVICE_1,
+            secondInferenceTextService1,
+            INFERENCE_FIELD_SERVICE_2,
+            inferenceTextService2
+        );
+
+        @SuppressWarnings("unchecked")
+        ActionListener<BulkResponse> bulkOperationListener = mock(ActionListener.class);
+        BulkShardRequest bulkShardRequest = runBulkOperation(
+            originalSource,
+            fieldsForModels,
+            modelRegistry,
+            inferenceServiceRegistry,
+            true,
+            bulkOperationListener
+        );
+        verify(bulkOperationListener).onResponse(any());
+
+        BulkItemRequest[] items = bulkShardRequest.items();
+        assertThat(items.length, equalTo(1));
+
+        Map<String, Object> writtenDocSource = ((IndexRequest) items[0].request()).sourceAsMap();
+        // Original doc source is preserved
+        originalSource.forEach((key, value) -> assertThat(writtenDocSource.get(key), equalTo(value)));
+
+        // Check inference results
+        verifyInferenceServiceInvoked(
+            modelRegistry,
+            INFERENCE_SERVICE_1_ID,
+            inferenceService1,
+            model1,
+            List.of(String.valueOf(firstInferenceTextService1), String.valueOf(secondInferenceTextService1))
+        );
+        verifyInferenceServiceInvoked(modelRegistry, INFERENCE_SERVICE_2_ID, inferenceService2, model2, List.of(String.valueOf(inferenceTextService2)));
+        checkInferenceResults(
+            originalSource,
+            writtenDocSource,
+            FIRST_INFERENCE_FIELD_SERVICE_1,
+            SECOND_INFERENCE_FIELD_SERVICE_1,
+            INFERENCE_FIELD_SERVICE_2
+        );   }
 
     public void testInferenceIdNotFound() {
 
@@ -298,7 +444,7 @@ public class BulkOperationTests extends ESTestCase {
         InferenceService inferenceService = createInferenceService(model, INFERENCE_SERVICE_1_ID);
         InferenceServiceRegistry inferenceServiceRegistry = createInferenceServiceRegistry(Map.of(SERVICE_1_ID, inferenceService));
 
-        Map<String, String> originalSource = Map.of(
+        Map<String, Object> originalSource = Map.of(
             INFERENCE_FIELD_SERVICE_2,
             randomAlphaOfLengthBetween(1, 100),
             randomAlphaOfLengthBetween(1, 20),
@@ -325,7 +471,7 @@ public class BulkOperationTests extends ESTestCase {
 
     @SuppressWarnings("unchecked")
     private static void checkInferenceResults(
-        Map<String, String> docSource,
+        Map<String, Object> docSource,
         Map<String, Object> writtenDocSource,
         String... inferenceFieldNames
     ) {
@@ -344,7 +490,7 @@ public class BulkOperationTests extends ESTestCase {
             assertNotNull(inferenceResultElement.get(BulkShardRequestInferenceProvider.SPARSE_VECTOR_SUBFIELD_NAME));
             assertThat(
                 inferenceResultElement.get(BulkShardRequestInferenceProvider.TEXT_SUBFIELD_NAME),
-                equalTo(docSource.get(inferenceFieldName))
+                equalTo(String.valueOf(docSource.get(inferenceFieldName)))
             );
         }
     }
@@ -354,7 +500,7 @@ public class BulkOperationTests extends ESTestCase {
         String inferenceService1Id,
         InferenceService inferenceService,
         Model model,
-        Collection<String> inferenceTexts
+        Collection<Object> inferenceTexts
     ) {
         verify(modelRegistry).getModel(eq(inferenceService1Id), any());
         verify(inferenceService).parsePersistedConfig(eq(inferenceService1Id), eq(TaskType.SPARSE_EMBEDDING), anyMap());
@@ -362,7 +508,7 @@ public class BulkOperationTests extends ESTestCase {
         verifyNoMoreInteractions(inferenceService);
     }
 
-    private static ArgumentMatcher<List<String>> containsInAnyOrder(Collection<String> expected) {
+    private static ArgumentMatcher<List<String>> containsInAnyOrder(Collection<Object> expected) {
         return new ArgumentMatcher<>() {
             @Override
             public boolean matches(List<String> argument) {
@@ -371,13 +517,13 @@ public class BulkOperationTests extends ESTestCase {
 
             @Override
             public String toString() {
-                return "containsAll(" + expected.stream().collect(Collectors.joining(", ")) + ")";
+                return "containsInAnyOrder(" + expected.stream().map(String::valueOf).collect(Collectors.joining(", ")) + ")";
             }
         };
     }
 
     private static BulkShardRequest runBulkOperation(
-        Map<String, String> docSource,
+        Map<String, Object> docSource,
         Map<String, Set<String>> fieldsForModels,
         ModelRegistry modelRegistry,
         InferenceServiceRegistry inferenceServiceRegistry,
@@ -396,7 +542,7 @@ public class BulkOperationTests extends ESTestCase {
     }
 
     private static BulkShardRequest runBulkOperation(
-        Map<String, String> docSource,
+        Map<String, Object> docSource,
         Map<String, Set<String>> fieldsForModels,
         ModelRegistry modelRegistry,
         InferenceServiceRegistry inferenceServiceRegistry,
