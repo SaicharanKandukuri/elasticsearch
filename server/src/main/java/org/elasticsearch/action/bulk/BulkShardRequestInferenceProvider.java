@@ -220,20 +220,15 @@ public class BulkShardRequestInferenceProvider {
                         k -> new HashMap<String, Object>()
                     );
                 } catch (ClassCastException e) {
+                    failedItems.add(itemIndex);
                     onBulkItemFailure.accept(
                         bulkItemRequest,
                         new IllegalArgumentException("Inference result field [" + ROOT_INFERENCE_FIELD + "] is not an object")
                     );
-                    return;
+                    break;
                 }
 
-                List<String> inferenceFieldNames;
-                try {
-                    inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap);
-                } catch (IllegalArgumentException e) {
-                    onBulkItemFailure.accept(bulkItemRequest, e);
-                    return;
-                }
+                List<String> inferenceFieldNames = getFieldNamesForInference(fieldModelsEntrySet.getValue(), docMap);
 
                 if (inferenceFieldNames.isEmpty()) {
                     continue;
@@ -246,9 +241,17 @@ public class BulkShardRequestInferenceProvider {
                         bulkItemRequest,
                         new IllegalArgumentException("No inference provider found for model ID " + modelId)
                     );
-                    continue;
+                    break;
                 }
-                List<String> inferenceTexts = getInferenceTexts(inferenceFieldNames, docMap);
+
+                List<String> inferenceTexts;
+                try {
+                    inferenceTexts = getInferenceTexts(inferenceFieldNames, docMap);
+                } catch (IllegalArgumentException e) {
+                    failedItems.add(itemIndex);
+                    onBulkItemFailure.accept(bulkItemRequest, e);
+                    break;
+                }
                 ActionListener<InferenceServiceResults> inferenceResultsListener = new ActionListener<>() {
                     @Override
                     public void onResponse(InferenceServiceResults results) {

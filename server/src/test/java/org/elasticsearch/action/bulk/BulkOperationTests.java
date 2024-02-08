@@ -56,6 +56,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static java.util.Collections.emptyMap;
+import static org.elasticsearch.action.bulk.BulkShardRequestInferenceProvider.ROOT_INFERENCE_FIELD;
+import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -282,22 +284,6 @@ public class BulkOperationTests extends ESTestCase {
         verifyInferenceServiceInvoked(modelRegistry, INFERENCE_SERVICE_1_ID, inferenceService, model, List.of(firstInferenceTextService1));
     }
 
-
-    private static Object randomObject() {
-        switch (randomInt(3)) {
-            case 0:
-                return randomDouble();
-            case 1:
-                return randomInt();
-            case 2:
-                return randomBoolean();
-            case 3:
-                return null;
-            default:
-                throw new IllegalStateException("Unexpected randomInt result");
-        }
-    }
-
     @SuppressWarnings("unchecked")
     public void testInferenceForArrays() {
 
@@ -360,6 +346,79 @@ public class BulkOperationTests extends ESTestCase {
         );
     }
 
+    private static Object randomObject() {
+        switch (randomInt(3)) {
+            case 0:
+                return randomDouble();
+            case 1:
+                return randomInt();
+            case 2:
+                return randomBoolean();
+            case 3:
+                return null;
+            default:
+                throw new IllegalStateException("Unexpected randomInt result");
+        }
+    }
+
+    public void testInferenceFailsForIncorrectRootObject() {
+
+        Map<String, Set<String>> fieldsForModels = Map.of(INFERENCE_SERVICE_1_ID, Set.of(FIRST_INFERENCE_FIELD_SERVICE_1));
+
+        ModelRegistry modelRegistry = createModelRegistry(Map.of(INFERENCE_SERVICE_1_ID, SERVICE_1_ID));
+
+        Model model = mock(Model.class);
+        InferenceService inferenceService = createInferenceServiceThatFails(model, INFERENCE_SERVICE_1_ID);
+        InferenceServiceRegistry inferenceServiceRegistry = createInferenceServiceRegistry(Map.of(SERVICE_1_ID, inferenceService));
+
+        Map<String, Object> originalSource = Map.of(
+            FIRST_INFERENCE_FIELD_SERVICE_1,
+            randomAlphaOfLengthBetween(1, 100),
+            ROOT_INFERENCE_FIELD,
+            "incorrect_root_object"
+        );
+
+        ArgumentCaptor<BulkResponse> bulkResponseCaptor = ArgumentCaptor.forClass(BulkResponse.class);
+        @SuppressWarnings("unchecked")
+        ActionListener<BulkResponse> bulkOperationListener = mock(ActionListener.class);
+        runBulkOperation(originalSource, fieldsForModels, modelRegistry, inferenceServiceRegistry, false, bulkOperationListener);
+
+        verify(bulkOperationListener).onResponse(bulkResponseCaptor.capture());
+        BulkResponse bulkResponse = bulkResponseCaptor.getValue();
+        assertTrue(bulkResponse.hasFailures());
+        BulkItemResponse item = bulkResponse.getItems()[0];
+        assertTrue(item.isFailed());
+        assertThat(item.getFailure().getCause().getMessage(), containsString("[_semantic_text_inference] is not an object"));
+    }
+
+    public void testInferenceFailsForUnsupportedObject() {
+
+        Map<String, Set<String>> fieldsForModels = Map.of(INFERENCE_SERVICE_1_ID, Set.of(FIRST_INFERENCE_FIELD_SERVICE_1));
+
+        ModelRegistry modelRegistry = createModelRegistry(Map.of(INFERENCE_SERVICE_1_ID, SERVICE_1_ID));
+
+        Model model = mock(Model.class);
+        InferenceService inferenceService = createInferenceServiceThatFails(model, INFERENCE_SERVICE_1_ID);
+        InferenceServiceRegistry inferenceServiceRegistry = createInferenceServiceRegistry(Map.of(SERVICE_1_ID, inferenceService));
+
+        Map<String, Object> originalSource = Map.of(
+            FIRST_INFERENCE_FIELD_SERVICE_1,
+             Map.of("test-field", "test-value")
+        );
+
+        ArgumentCaptor<BulkResponse> bulkResponseCaptor = ArgumentCaptor.forClass(BulkResponse.class);
+        @SuppressWarnings("unchecked")
+        ActionListener<BulkResponse> bulkOperationListener = mock(ActionListener.class);
+        runBulkOperation(originalSource, fieldsForModels, modelRegistry, inferenceServiceRegistry, false, bulkOperationListener);
+
+        verify(bulkOperationListener).onResponse(bulkResponseCaptor.capture());
+        BulkResponse bulkResponse = bulkResponseCaptor.getValue();
+        assertTrue(bulkResponse.hasFailures());
+        BulkItemResponse item = bulkResponse.getItems()[0];
+        assertTrue(item.isFailed());
+        assertThat(item.getFailure().getCause().getMessage(), containsString("field [first_inference_field_service_1] can't be an object"));
+    }
+
     public void testTypeCoercionForInferenceFields() {
 
         Map<String, Set<String>> fieldsForModels = Map.of(
@@ -420,7 +479,13 @@ public class BulkOperationTests extends ESTestCase {
             model1,
             List.of(String.valueOf(firstInferenceTextService1), String.valueOf(secondInferenceTextService1))
         );
-        verifyInferenceServiceInvoked(modelRegistry, INFERENCE_SERVICE_2_ID, inferenceService2, model2, List.of(String.valueOf(inferenceTextService2)));
+        verifyInferenceServiceInvoked(
+            modelRegistry,
+            INFERENCE_SERVICE_2_ID,
+            inferenceService2,
+            model2,
+            List.of(String.valueOf(inferenceTextService2))
+        );
         checkInferenceResults(
             originalSource,
             writtenDocSource,
@@ -477,7 +542,7 @@ public class BulkOperationTests extends ESTestCase {
     ) {
 
         Map<String, Object> inferenceRootResultField = (Map<String, Object>) writtenDocSource.get(
-            BulkShardRequestInferenceProvider.ROOT_INFERENCE_FIELD
+            ROOT_INFERENCE_FIELD
         );
 
         for (String inferenceFieldName : inferenceFieldNames) {
